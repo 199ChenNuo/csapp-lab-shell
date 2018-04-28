@@ -1,5 +1,12 @@
+----
+note: if run './grade-shlab.pl -f tsh.c', and the terminal prompt that "Can't locate config.pm in @INC", you should add  
+## use lib ".";  
+in grade-shlab.pl before line 4 "use config;"
+
+----  
 1 chmod  
 ====  
+change mode brfore getting start  
  - chmod +x checktsh.pl  
  - chmod +x grade-shlab.pl  
  - chmod +x myint.c  
@@ -9,6 +16,7 @@
  - chmod +x sdriver.pl  
  - chmod +x tsh.c  
  - chmod +x tshref  
+
 ----  
 2 check tsh  
 ====  
@@ -48,3 +56,5 @@ the program we should focus on
 standard tiny shell  
 ## 5 tshref.out  
 standard output of the tiny shell  
+
+  

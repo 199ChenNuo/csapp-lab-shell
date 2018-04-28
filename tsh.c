@@ -268,15 +268,6 @@ int parseline(const char *cmdline, char **argv)
     if ((bg = (*argv[argc-1] == '&')) != 0) {
         argv[--argc] = NULL;
     }
-    /* check argv, argc */
-    /*
-    int i=0;
-    for(; i<argc; i++){
-        printf("argv[%d]=%s\n", i, argv[i]);
-    }
-    fflush(stdout);
-    */
-    /* end check */
     return bg;
 }
 
@@ -421,9 +412,7 @@ void sigint_handler(int sig)
     if(pid == 0){
         return;
     }
-    //printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, SIGINT);
     kill(-pid, SIGINT);
-    deletejob(jobs, pid);
     return;
 }
 
@@ -444,7 +433,6 @@ void sigtstp_handler(int sig)
     job = getjobpid(jobs, pid);
     job->state = ST;
     kill(-pid, SIGTSTP);
-    //printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, sig);
     return;
 }
 

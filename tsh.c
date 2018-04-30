@@ -42,6 +42,7 @@ char prompt[] = "tsh> ";    /* command line prompt (DO NOT CHANGE) */
 int verbose = 0;            /* if true, print additional output */
 int nextjid = 1;            /* next job ID to allocate */
 char sbuf[MAXLINE];         /* for composing sprintf messages */
+int argc;                   /* argument count */
 
 struct job_t {              /* The job struct */
     pid_t pid;              /* job PID */
@@ -166,27 +167,28 @@ int main(int argc, char **argv)
 */
 void eval(char *cmdline) 
 {
+    int olderrno = errno;
     char *argv[MAXARGS];
     char buf[MAXLINE];
     int bg;
     pid_t pid;
-    sigset_t mask;
+    sigset_t mask, prev_mask;
 
     strcpy(buf, cmdline);
     bg = parseline(buf, argv);
     if(argv[0] == NULL)
         return;
     
-        
     if(!builtin_cmd(argv)){
-
+        /* block SIGCHLD so that the process won't be intrupted */
         sigemptyset(&mask);
-        sigaddset(&mask,SIGCHLD);
-        sigprocmask(SIG_BLOCK,&mask,NULL); 
+        sigaddset(&mask, SIGCHLD);
+        sigprocmask(SIG_BLOCK, &mask, &prev_mask); 
 
+        /* child runs user job */
         if((pid = fork()) == 0){
+            
             setpgid(0, 0);
-            sigprocmask(SIG_UNBLOCK,&mask,NULL); 
             if(execve(argv[0], argv, environ) < 0){
                 printf("%s: Command not found\n", argv[0]);
                 exit(0);
@@ -200,9 +202,11 @@ void eval(char *cmdline)
                 addjob(jobs, pid, BG, cmdline);
             }
     
-            sigprocmask(SIG_UNBLOCK,&mask,NULL); 
+            /* unblock, so parent can deal child */
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL); 
 
             if(!bg){
+                /* wait for fg job */
                 waitfg(pid);
             }else{
                 printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
@@ -211,9 +215,9 @@ void eval(char *cmdline)
             
         }
     }
+    errno = olderrno;
     return;
-}
-int argc;     
+}   
 /* 
  * parseline - Parse the command line and build the argv array.
  * 
@@ -278,24 +282,18 @@ int parseline(const char *cmdline, char **argv)
 int builtin_cmd(char **argv) 
 {
     if(!strcmp(argv[0], "quit")){
-        
         exit(0);
     }
     if(!strcmp(argv[0], "jobs")){
         listjobs(jobs);
-        
         return 1;
     }
     if(!strcmp(argv[0],"bg")||!strcmp(argv[0],"fg")){
         do_bgfg(argv);
         return 1;
     }
-    if(!strcmp(argv[0],"&")){
-       
-        return 1;
-    }
-   
-    return 0;     /* not a builtin command */
+    /* not a builtin command */
+    return 0;     
 }
 
 /* 
@@ -303,8 +301,6 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
-
-    char percentage='%';
     if(argc == 1){
         printf("%s command requires PID or %%jobid argument\n", argv[0]);
         return;
@@ -312,8 +308,10 @@ void do_bgfg(char **argv)
     char *sjid = argv[1];
     struct job_t *job;
     int jid;
-
-    if(sjid[0] == percentage){
+    pid_t pid;
+    /* input is a jid */
+    if(sjid[0] == '%'){
+        /* ignore '%' */
         sjid++;
         jid=atoi(sjid);
         job = getjobjid(jobs, jid);
@@ -321,31 +319,42 @@ void do_bgfg(char **argv)
             printf("%s: No such job\n", argv[1]);
             return;
         }
-    }
-    jid=atoi(sjid);
-    if(jid == 0){
-        printf("%s: argument must be a PID or %%jobid\n", argv[0]);
-        return;
-    }
-    job = getjobjid(jobs, jid);
-    if(job == NULL){
-        printf("(%d): No such process\n", jid);
-        return;
-    }
-    kill(-(job->pid), SIGCONT);
-    
-    if(!strcmp(argv[0], "fg")){
-        //printf("[%d] (%d) %s", jid, job->pid, job->cmdline);
-        if(job->state == ST){
-            kill(-(job->pid), SIGCONT);
+        if(jid == 0){
+            printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+            return;
         }
-        job->state = FG;
-        fflush(stdout);
-        waitfg(job->pid);
+        pid = job->pid;
+    /* input is a pid */
+    }else{
+        /*
+        * by the way, if here I mistaken pid as jid, the checktsh.pl
+        * won't find this bug 
+        */
+        pid=atoi(sjid);
+        job = getjobpid(jobs, pid);
+        if(pid == 0){
+            printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+            return;
+        }
+        if(job == NULL){
+            printf("(%d): No such process\n", jid);
+            return;
+        }
+        jid = pid2jid(pid);
     }
+    
+    /* let the job continue anyway */
+    kill(-pid, SIGCONT);
+    
+    /* wait for foreground job */
+    if(!strcmp(argv[0], "fg")){
+        job->state = FG;
+        waitfg(pid);
+    }
+    /* print infomation about background process */
     if(!strcmp(argv[0], "bg")){
         job->state = BG;
-        printf("[%d] (%d) %s", jid, job->pid, job->cmdline);
+        printf("[%d] (%d) %s", jid, pid, job->cmdline);
     }
     
     return;
@@ -356,12 +365,15 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    /* busy loop ??? */
+    /* maintain errno */
+    int olderrno = errno;
+    /* busy loop */
     while(pid == fgpid(jobs)){
-        sleep(1);
+        sleep(0);
         if(verbose)
             printf("waiting for job: %s\n", getjobpid(jobs, pid)->cmdline);
     }
+    errno = olderrno;
     return;
 }
 
@@ -378,25 +390,32 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig) 
 {
-    //printf("sig chld\n");
-    pid_t pid;
     int status;
-    sigset_t mask, prev_mask;
-    sigfillset(&mask);
-    while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0){
-        sigprocmask(SIG_BLOCK, &mask, &prev_mask);
-        if(WIFSIGNALED(status)){
+    pid_t pid;
+    int olderrno = errno;
+    while((pid=waitpid(-1,&status,WNOHANG|WUNTRACED))>0){
+        if(WIFSTOPPED(status)){
+            sigtstp_handler(-pid);
+        /* uncaught signal, child killed itself */
+        }else if(WIFSIGNALED(status)){
+            /*
+            * do the printf here, if put printf in sigint_handler
+            * info will be printf twice( one by parent and one by child itself )
+            * 
+            * let parent deal child and grandchild( SIGCHLD is still blocked in child process )
+            */
             printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, SIGINT);
+            sigint_handler(-pid);
+            /*
+            * delete job in parent process 
+            * if deletejob in child process, printf won't be able to find pid( always be 0 )
+            */
             deletejob(jobs, pid);
         }else if(WIFEXITED(status)){
-            deletejob(jobs, pid);
-        }else if(WIFSTOPPED(status)){
-            printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, SIGTSTP);
-            struct job_t *job = getjobpid(jobs, pid);
-            job->state = ST;
+            deletejob(jobs,pid);
         }
-        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
     }
+    errno = olderrno;
     return;
 }
 
@@ -407,12 +426,33 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig) 
 {
-    pid_t pid;
-    pid = fgpid(jobs);
-    if(pid == 0){
-        return;
+    int olderrno = errno;
+    pid_t pid=fgpid(jobs);
+    if(pid != 0){
+        if(sig == SIGINT){
+            if(verbose)
+                printf("call by child\n");
+            /*
+            * call by child process itself, kill the process group
+            * child process need to kill this process group
+            */
+            kill(-pid,SIGINT);
+            /*
+            * don'y delete the job, or else when parent try to print info about 
+            *  this job, jid would be zero
+            */
+            //deletejob(jobs,pid);
+            
+        /*
+        * parent call sigchld_heandler, don't need to 'kill(...)'
+        * under this condition, sigchld_handler will do what needed to be done
+        */
+        }else if(sig == -pid){
+            if(verbose)
+                printf("call by parent\n");
+        }
     }
-    kill(-pid, SIGINT);
+    errno = olderrno;
     return;
 }
 
@@ -423,16 +463,26 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig) 
 {
-    pid_t pid;
-    struct job_t *job;
-    pid = fgpid(jobs);
-    
-    if(pid == 0){
-        return;
+    int olderrno = errno;
+    pid_t pid=fgpid(jobs);
+    int jid=pid2jid(pid);
+    if(pid != 0){
+        /* child process try to stopp itself, send signal to the process group */
+        if(sig == SIGTSTP){
+            if(verbose)
+                printf("call by child\n");
+            printf("Job [%d] (%d) stopped by signal %d\n", jid, pid, SIGTSTP);
+            getjobpid(jobs,pid)->state=ST;
+            kill(-pid, SIGTSTP);
+        /* call by parent, don't need to send signal */
+        }else if(sig == -pid){
+            if(verbose)
+                printf("call by parent\n");
+            printf("Job [%d] (%d) stopped by signal %d\n", jid, pid, SIGTSTP);
+            getjobpid(jobs,pid)->state=ST;
+        }
     }
-    job = getjobpid(jobs, pid);
-    job->state = ST;
-    kill(-pid, SIGTSTP);
+    errno = olderrno;
     return;
 }
 
